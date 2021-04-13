@@ -78,6 +78,9 @@ class Chunck:
         
         cap.release()
         
+        if detections == 0:
+            return False
+
         self.x1_avg_face = int(self.x1_avg_face / detections)
         self.x2_avg_face = int(self.x2_avg_face / detections)
         self.y1_avg_face = int(self.y1_avg_face / detections)
@@ -97,6 +100,8 @@ class Chunck:
         
         self.mouth = dlib.rectangle(self.x_min_landmark, self.y_min_landmark, 
                                    self.x_max_landmark, self.y_max_landmark)
+
+        return True
         
         
     def show(self, time_sleep=0):
@@ -112,29 +117,41 @@ class Chunck:
             
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             landmarks = self.predictor(gray, self.face)
+
+            x1_angle, x2_angle, y1_angle, y2_angle = 0, 0, 0, 0
+            x1_mouth, x2_mouth, y1_mouth, y2_mouth = self.WIDTH, 0, self.HEIGHT, 0
             for i, landmark in enumerate(landmarks.parts()[48:60]):
                 if i != 0:
                     x_prev, y_prev = x, y
                     cv2.line(blank, (x_prev, y_prev), (x, y), (255, 255, 255), 1)
                     
                 x, y = landmark.x, landmark.y
+                if i == 0:
+                    x1_angle, y1_angle = x, y
+                elif i == 6:
+                    x2_angle, y2_angle = x, y
+
+                x1_mouth, x2_mouth = min(x1_mouth, x), max(x2_mouth, x)
+                y1_mouth, y2_mouth = min(y1_mouth, y), max(y2_mouth, y)
+
                 cv2.circle(frame, (x, y), 2, (0, 0, 255))
                 
-                #cv2.circle(blank, (x, y), 1, (255, 255, 255))
+
+            angle = 180 * np.arctan2(y2_angle - y1_angle, x2_angle - x1_angle) / np.pi
+
                 
-            cv2.imshow('blank line', blank)
-                
-                
-            frame = imutils.rotate(frame, self.angle, center=(self.face.center().x,
-                                                        self.face.center().y))
-            blank = imutils.rotate(blank, self.angle, center=(self.face.center().x,
-                                                        self.face.center().y))
+            center = ((x2_mouth + x1_mouth) / 2, (y2_mouth + y1_mouth) / 2)
+            frame = imutils.rotate(frame, angle, center=center)
+            blank = imutils.rotate(blank, angle, center=center)
                
             # Crop mouth area
-            top = int(self.mouth.top() - 0.5 * self.mouth.height())
-            bottom = int(self.mouth.bottom() + 0.5 * self.mouth.height())
-            left = int(self.mouth.left() - 0.2 * self.mouth.width())
-            right = int(self.mouth.right() + 0.2 * self.mouth.width())
+            height = self.y_max_landmark - self.y_min_landmark
+            width = self.x_max_landmark - self.x_min_landmark
+
+            top = int(self.y_min_landmark - height)
+            bottom = int(self.y_max_landmark + height)
+            left = int(self.x_min_landmark - 0.5 * width)
+            right = int(self.x_max_landmark + 0.5 * width)
             frame = frame[top : bottom, left : right]
             blank = blank[top : bottom, left : right]
             

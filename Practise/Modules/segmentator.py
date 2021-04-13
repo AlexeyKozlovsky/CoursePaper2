@@ -1,136 +1,137 @@
-import os
 import sys
+import os
 import subprocess
 import json
 import math
 
-import cv2
 import vosk
 import librosa
-import pytube as pt
 import numpy as np
 import pandas as pd
 import moviepy.editor as mp
 
-from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
-
 sys.path.insert(1, '../Modules/')
 from chunck import Chunck
 
+from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
+
 
 class Segmentator:
-	"""Класс для сегментации видоефайлов"""
-	def __init__(self, audio_model_path, landmarks_model_path, conf=1):
-		self.landmarks_model_path = landmarks_model_path
-		self.audio_model_path = audio_model_path
-		self.conf = conf # Вероятность, начиная с которой надо оставлять распознанные слов
-		self.word_dict = None
-		
+    def __init__(self, audio_model_path, video_model_path,
+                conf=1):
+        self.audio_model_path = audio_model_path
+        self.video_model_path = video_model_path
+        self.conf = conf
+        
+    def _to_dict(self, df):
+        result = {}
+        for index, row in df.iterrows():
+            if row['conf'] >= self.conf:
+                result[row['word']] = []
 
-	def segment_to_chuncks(self, path, out_path):
-		"""
-		Метод для сегментации видеофайла по словам в датасет
+        for index, row in df.iterrows():
+            if row['conf'] >= self.conf:
+                result[row['word']].append((row['start'], row['end']))
+        return result
+        
+    def _extract_words(self, res):
+        jres = json.loads(res)
+        if not 'result' in jres:
+            return []
+        words = jres['result']
+        return words
+    
+    def _transcribe_words(self, recognizer, bytes):
+        result = []
 
-		path: путь для видео
-		out_path: путь для датасета
-		"""
-		if self.word_dict is None:
-			self.word_dict = self.segment_words(path)
+        chunk_size = 4000
+        for chunk_no in range(math.ceil(len(bytes) / chunk_size)):
+            start = chunk_no * chunk_size
+            end = min(len(bytes), (chunk_no + 1) * chunk_size)
+            data = bytes[start : end]
 
-		for key in self.word_dict:
-			for index, word in enumerate(self.word_dict[key]):
-				max_index = 0
+            if recognizer.AcceptWaveform(data):
+                words = self._extract_words(recognizer.Result())
+                result += words
+        result += self._extract_words(recognizer.FinalResult())
 
-				if word[2] >= self.conf:
-					l_path = f'{out_path}/{word[0]}'
-					w_path = f'{out_path}/{word[0]}/{word}'
+        return result
+    
+    def get_info(self, input_path, out_path=None):
+        vosk.SetLogLevel(-1)
+        
+        temp_audio_path = 'temp.wav'
+        clip = mp.VideoFileClip(input_path)
+        clip.audio.write_audiofile(temp_audio_path)
 
-					if not os.path.exist(l_path):
-						os.mkdir(l_path)
-					if not os.path.exist(w_path):
-						os.mkdir(w_path)
-					else:
+        sample_rate = 16000
+        audio, sr = librosa.load(temp_audio_path, sr=sample_rate)
 
-						files = os.listdir()
-						for file in files:
-							max_index = max(max_index, file.partition('.'))
+        int16 = np.int16(audio * 32768).tobytes()
 
-					temp_path = f'{w_path}/{max_index}t.mp4'
-					ffmpeg_extract_subclip(path, word[0], word[1], temp_path)
+        model = vosk.Model(self.audio_model_path)
+        recognizer = vosk.KaldiRecognizer(model, sample_rate)
 
-					ch = Chunck(path, self.landmarks_model_path)
-					ch.prepare()
-					ch.to_file(f'{w_path}/{max_index}.mp4')
+        res = self._transcribe_words(recognizer, int16)
+        df = pd.DataFrame.from_records(res)
+        df = df.sort_values('start')
+        
+        if os.path.isfile(temp_audio_path):
+            os.remove(temp_audio_path)
+        
+        if out_path is not None:
+            df.to_csv(out_path, index=False)
+            
+        return self._to_dict(df)
+    
+    def get_chuncks(self, input_path, out_path='', size=(50, 50),
+                    word_dict=None):
+        # Create a dict for segmented words timestamps
+        if word_dict is None:
+            word_dict = self.get_info(input_path)
+        
+        if not os.path.exists(out_path):
+            os.mkdir(out_path)
+            
+        for word in word_dict:
+            w_num = 0
+            l_path = f'{out_path}/{word[0]}'
+            w_path = f'{l_path}/{word}'
+            
+            if not os.path.exists(l_path):
+                os.mkdir(l_path)
+                
+            if not os.path.exists(w_path):
+                os.mkdir(w_path)
+              
+            filenames = os.listdir(w_path)
+            for filename in filenames:
+                string_num = filename.partition('.')[0]
+                if string_num.isdigit():
+                    w_num = max(w_num, int(filename.partition('.')[0]))
+                
+            for current_word in word_dict[word]:
+                print(current_word)
+                temp_video_path = f'{w_path}/temp.mp4'
 
-					if os.path.isfile(temp_path):
-						os.remove(temp_path)
-						
-
-	def _extract_words(self, res):
-		jres = json.loads(res)
-		if not 'result' in jres:
-			return []
-		words = jres['result']
-		return words
-
-	def _transcribe_words(self, recognizer, bytes):
-		result = []
-
-		chunck_size = 4000
-		for chunck_no in range(math.ceil(len(bytes)) / chunck_size):
-			start = chunck_size * chunck_no
-			end = min(len(bytes), (chunck_no + 1) * chunck_size)
-			data = bytes[start : end]
-
-			if recognizer.AcceptWaveform(data):
-				words = self._extract_words(recognizer.Result())
-				result += words
-
-		result += self._extract_words(recognizer.FinalResult())
-
-		return result
-
-	def segment_words(self, input_path, out_path=None):
-		"""
-		Метод для сбора информации о таймингах слов в
-		словарь или cvs файл
-
-		input_path: путь к видеофайлу
-		out_path: путь к csv файлу. Если None, то сохранять не надо
-
-		returns: словарь слов с таймингами и вероятностями
-		"""
-
-		clip = mp.VideoFileClip(input_path)
-		temp_audio_path = 'audio.mp3'
-		clip.audio.write_audiofile(temp_audio_path)
-
-		vosk.SetLogLevel(-1)
-
-		sample_rate = 16000
-		audio, sr = librosa.load(temp_audio_path, sr=sample_rate)
-
-		int16 = np.int16(audio * 32768).tobytes()
-
-		model = vosk.Model(self.audio_model_path)
-		recognizer = vosk.KaldiRecognizer(model, sample_rate)
-
-		res = transcribe_words(recognizer, int16)
-		df = pd.DataFrame.from_records(res)
-		df = df.sort_values('start')
-
-		if out_path is not None:
-			df.to_cvs(out_path, index=False)
-
-
-		word_dict = {}
-		for index, row in df.iterrows():
-			word_dict[row['word']] = []
-
-		for index, row in df.iterrows():
-			word_dict[row['word']].append((row['start'], row['end'], row['conf']))
-
-		if os.path.isfile(temp_audio_path):
-			os.delete(temp_audio_path)
-
-		return word_dict
+                ffmpeg_extract_subclip(input_path, current_word[0], 
+                                       current_word[1],
+                                       targetname=temp_video_path)
+                
+                ch = Chunck(temp_video_path, self.video_model_path, size)
+                if not ch.prepare():
+                    continue
+                    
+                try:
+                    ch.to_file(f'{w_path}/{w_num}.avi')
+                except ZeroDivisionError:
+                    continue
+                
+                df = pd.DataFrame(columns=['length'],
+                                 data=[current_word[1] - current_word[0]])
+                df.to_csv(f'{w_path}/{w_num}.csv', index=False)
+                
+                w_num += 1
+                
+                if os.path.isfile(temp_video_path):
+                    os.remove(temp_video_path)
