@@ -92,6 +92,9 @@ class Segmentator:
         
         if not os.path.exists(out_path):
             os.mkdir(out_path)
+
+        columns = ['length', 'velocity_x', 'velocity_y']
+        full_df = pd.DataFrame(columns=columns)
             
         for word in word_dict:
             w_num = 0
@@ -123,15 +126,19 @@ class Segmentator:
                     continue
                     
                 try:
-                    ch.to_file(f'{w_path}/{w_num}.avi')
+                    velocity = ch.to_file(f'{w_path}/{w_num}.avi')
                 except ZeroDivisionError:
                     continue
                 
-                df = pd.DataFrame(columns=['length'],
-                                 data=[current_word[1] - current_word[0]])
+                df = pd.DataFrame(columns=columns,
+                                 data=[[current_word[1] - current_word[0], velocity[0], velocity[1]]])
+
+                full_df = pd.concat([full_df, df])
                 df.to_csv(f'{w_path}/{w_num}.csv', index=False)
                 
                 w_num += 1
                 
                 if os.path.isfile(temp_video_path):
                     os.remove(temp_video_path)
+
+        return full_df

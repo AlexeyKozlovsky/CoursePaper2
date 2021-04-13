@@ -104,9 +104,24 @@ class Chunck:
         return True
         
         
-    def show(self, time_sleep=0):
+    def __preprocess(self, time_sleep, out_path=None):
         cap = cv2.VideoCapture(self.path)
+        out = None
+        if out_path is not None:
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(out_path, fourcc, 10, self.size)
+
+        length = 60 - 48
+        x_arr, x_prev_arr = np.zeros((length)), np.zeros((length))
+        y_arr, y_prev_arr = np.zeros((length)), np.zeros((length))
+        velocity_x, velocity_y = 0, 0
+        start_iteration = 2
         
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        # Iteration count which will be useful for turning on velocity counter
+
+        iteration = 0
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -120,12 +135,24 @@ class Chunck:
 
             x1_angle, x2_angle, y1_angle, y2_angle = 0, 0, 0, 0
             x1_mouth, x2_mouth, y1_mouth, y2_mouth = self.WIDTH, 0, self.HEIGHT, 0
+
+            current_velocity_x, current_velocity_y = 0, 0
             for i, landmark in enumerate(landmarks.parts()[48:60]):
+                x_prev_arr[i], x_arr[i] = x_arr[i], landmark.x
+                y_prev_arr[i], y_arr[i] = y_arr[i], landmark.y
+
+                if iteration >= start_iteration:
+                    current_velocity_x += np.abs(x_arr[i] - x_prev_arr[i])
+                    current_velocity_y += np.abs(y_arr[i] - y_prev_arr[i])
+
+
                 if i != 0:
                     x_prev, y_prev = x, y
+                    x, y = landmark.x, landmark.y
                     cv2.line(blank, (x_prev, y_prev), (x, y), (255, 255, 255), 1)
-                    
-                x, y = landmark.x, landmark.y
+                else: 
+                    x, y = landmark.x, landmark.y
+
                 if i == 0:
                     x1_angle, y1_angle = x, y
                 elif i == 6:
@@ -134,12 +161,16 @@ class Chunck:
                 x1_mouth, x2_mouth = min(x1_mouth, x), max(x2_mouth, x)
                 y1_mouth, y2_mouth = min(y1_mouth, y), max(y2_mouth, y)
 
-                cv2.circle(frame, (x, y), 2, (0, 0, 255))
+                cv2.circle(frame, (x, y), 1, (0, 0, 255))
+
+            current_velocity_x /= length
+            current_velocity_y /= length
+            velocity_x += current_velocity_x
+            velocity_y += current_velocity_y
                 
 
+            # rotate frame around center on angle
             angle = 180 * np.arctan2(y2_angle - y1_angle, x2_angle - x1_angle) / np.pi
-
-                
             center = ((x2_mouth + x1_mouth) / 2, (y2_mouth + y1_mouth) / 2)
             frame = imutils.rotate(frame, angle, center=center)
             blank = imutils.rotate(blank, angle, center=center)
@@ -148,67 +179,53 @@ class Chunck:
             height = self.y_max_landmark - self.y_min_landmark
             width = self.x_max_landmark - self.x_min_landmark
 
-            top = int(self.y_min_landmark - height)
-            bottom = int(self.y_max_landmark + height)
-            left = int(self.x_min_landmark - 0.5 * width)
-            right = int(self.x_max_landmark + 0.5 * width)
+
+            general_center = self.mouth.center()
+            shift = (general_center.x - center[0], general_center.y - center[1])
+
+            top = int(self.y_min_landmark - shift[1] - height / 4)
+            bottom = int(self.y_max_landmark - shift[1] + height / 4)
+            left = int(self.x_min_landmark - shift[0] - width / 4)
+            right = int(self.x_max_landmark - shift[0] + width / 4)
             frame = frame[top : bottom, left : right]
             blank = blank[top : bottom, left : right]
+
             
-            frame = imutils.resize(frame, width=self.size[0], height=self.size[1])
-            blank = imutils.resize(blank, width=self.size[0], height=self.size[1])
+            # frame = imutils.resize(frame, width=self.size[0], height=self.size[1])
+            frame = cv2.resize(frame, self.size)
+            # blank = imutils.resize(blank, width=self.size[0], height=self.size[1])
+            blank = cv2.resize(blank, self.size)
+
+            if out_path is None:
+                cv2.imshow('chunk', frame)
+                cv2.imshow('blank', blank)
             
-            cv2.imshow('chunk', frame)
-            cv2.imshow('blank', blank)
-            
-            time.sleep(time_sleep)
+                time.sleep(time_sleep)
+            else:
+                out.write(blank)
             
             if cv2.waitKey(1) & 0xff == ord('q'):
                 break
+
+            iteration += 1
                 
         cap.release()
-        cv2.destroyAllWindows()
+
+        if out_path is None:
+            cv2.destroyAllWindows()
+
+        velocity_x /= (iteration - start_iteration)
+        velocity_y /= (iteration - start_iteration)
+
+        velocity_x *= fps
+        velocity_y *= fps
+
+        return (velocity_x, velocity_y)
+
+
+    def show(self, time_sleep=0):
+        return self.__preprocess(time_sleep)
+        
         
     def to_file(self, filename):
-        cap = cv2.VideoCapture(self.path)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        out = cv2.VideoWriter(filename, fourcc, 10, (self.size[0],
-                                                    self.size[1]))
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            blank = np.zeros((self.HEIGHT, self.WIDTH, 3), dtype=np.uint8)
-             
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            landmarks = self.predictor(gray, self.face)
-            for i, landmark in enumerate(landmarks.parts()[48:60]):
-                if i != 0:
-                    x_prev, y_prev = x, y
-                    cv2.line(blank, (x_prev, y_prev), (x, y), (255, 255, 255), 1)
-                    
-                x, y = landmark.x, landmark.y
-                cv2.circle(frame, (x, y), 2, (0, 0, 255))
-                
-            frame = imutils.rotate(frame, self.angle, center=(self.face.center().x,
-                                                        self.face.center().y))
-            blank = imutils.rotate(blank, self.angle, center=(self.face.center().x,
-                                                        self.face.center().y))
-               
-            # Crop mouth area
-            top = int(self.mouth.top() - 0.5 * self.mouth.height())
-            bottom = int(self.mouth.bottom() + 0.5 * self.mouth.height())
-            left = int(self.mouth.left() - 0.2 * self.mouth.width())
-            right = int(self.mouth.right() + 0.2 * self.mouth.width())
-            frame = frame[top : bottom, left : right]
-            blank = blank[top : bottom, left : right]
-            
-            frame = imutils.resize(frame, width=self.size[0], height=self.size[1])
-            blank = imutils.resize(blank, width=self.size[0], height=self.size[1])
-            blank = cv2.resize(blank, self.size)
-            
-            out.write(blank)
-        
-        cap.release()
+        return self.__preprocess(0, filename)
