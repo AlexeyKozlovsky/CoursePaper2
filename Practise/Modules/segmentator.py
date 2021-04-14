@@ -93,7 +93,7 @@ class Segmentator:
         if not os.path.exists(out_path):
             os.mkdir(out_path)
 
-        columns = ['length', 'velocity_x', 'velocity_y']
+        columns = ['word', 'length', 'velocity_x', 'velocity_y']
         full_df = pd.DataFrame(columns=columns)
             
         for word in word_dict:
@@ -114,7 +114,6 @@ class Segmentator:
                     w_num = max(w_num, int(filename.partition('.')[0]))
                 
             for current_word in word_dict[word]:
-                print(current_word)
                 temp_video_path = f'{w_path}/temp.mp4'
 
                 ffmpeg_extract_subclip(input_path, current_word[0], 
@@ -131,7 +130,7 @@ class Segmentator:
                     continue
                 
                 df = pd.DataFrame(columns=columns,
-                                 data=[[current_word[1] - current_word[0], velocity[0], velocity[1]]])
+                                 data=[[word, current_word[1] - current_word[0], velocity[0], velocity[1]]])
 
                 full_df = pd.concat([full_df, df])
                 df.to_csv(f'{w_path}/{w_num}.csv', index=False)
